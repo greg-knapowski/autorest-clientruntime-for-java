@@ -8,8 +8,6 @@ package com.microsoft.rest.v2.http;
 
 import com.microsoft.rest.v2.annotations.Beta;
 
-import java.net.Proxy;
-
 /**
  * The set of parameters used to create an HTTP client.
  */
@@ -22,6 +20,19 @@ public class HttpClientConfiguration {
      */
     public Proxy proxy() {
         return proxy;
+    }
+
+    /**
+     * Creates an HttpClientConfiguration.
+     * @param proxy The optional java.net.Proxy to Use.
+     */
+    public HttpClientConfiguration(java.net.Proxy proxy) {
+        if(proxy != null) {
+            this.proxy = new Proxy(proxy);
+        } else {
+            this.proxy = null;
+        }
+        this.poolOptions = new SharedChannelPoolOptions();
     }
 
     /**

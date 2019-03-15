@@ -25,7 +25,6 @@ import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLException;
 import java.net.InetSocketAddress;
-import java.net.Proxy;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.ZoneOffset;
@@ -169,23 +168,36 @@ class SharedChannelPool implements ChannelPool {
                             } else {
                                 port = request.destinationURI.getPort();
                             }
+                            Proxy proxy = request.proxy;
                             channelCount.incrementAndGet();
                             SharedChannelPool.this.bootstrap.clone().handler(new ChannelInitializer<Channel>() {
                                 @Override
                                 protected void initChannel(Channel ch) throws Exception {
                                     assert ch.eventLoop().inEventLoop();
-                                    if (request.proxy != null) {
-                                        ch.pipeline().addFirst("HttpProxyHandler", new HttpProxyHandler(request.proxy.address()));
+
+                                    if(proxy != null) {
+                                    	// If CONNECT method is desired use HttpProxyHandler.
+	                                    if (proxy.isTunneling()) {
+	                                        ch.pipeline().addFirst("HttpProxyHandler", new HttpProxyHandler(request.proxy.address()));
+	                                    }
+	                                    // If secure connection is desired regardless of CONNECT use an ssl handler.
+	                                    if(proxy.isSecure()) {
+	                                    	ch.pipeline().addFirst("ProxySslHandler", sslContext.newHandler(ch.alloc()));
+	                                    }
                                     }
                                     handler.channelCreated(ch);
                                 }
-                            }).connect(request.destinationURI.getHost(), port).addListener((ChannelFuture f) -> {
+                            }).connect(request.channelURI.getHost(), request.channelURI.getPort()).addListener((ChannelFuture f) -> {
                                 if (f.isSuccess()) {
                                     Channel channel = f.channel();
                                     channel.attr(CHANNEL_URI).set(request.channelURI);
 
-                                    // Apply SSL handler for https connections
-                                    if ("https".equalsIgnoreCase(request.destinationURI.getScheme())) {
+                                    // Apply SSL handler for https connections,
+                                    // if the the Proxy is CONNECTing (Tunneling) or there is no proxy.
+                                    // If the the proxy is non-CONNECTing (non-Tunneling) no need for an SSL handler
+                                    // the proxy will establish it's own TLS to services and destination is already set to the proxy
+                                    if ("https".equalsIgnoreCase(request.destinationURI.getScheme()) && 
+                                            (proxy == null || proxy.isTunneling())) {
                                         channel.pipeline().addBefore("HttpClientCodec", "SslHandler", this.sslContext.newHandler(channel.alloc(), request.destinationURI.getHost(), port));
                                     }
 
@@ -250,7 +262,7 @@ class SharedChannelPool implements ChannelPool {
         try {
             channelRequest.destinationURI = new URI(String.format("%s://%s:%d", uri.getScheme(), uri.getHost(), port));
 
-            if (proxy == null) {
+            if (proxy == null || proxy.isTunneling()) {
                 channelRequest.channelURI = channelRequest.destinationURI;
             } else {
                 InetSocketAddress address = (InetSocketAddress) proxy.address();
