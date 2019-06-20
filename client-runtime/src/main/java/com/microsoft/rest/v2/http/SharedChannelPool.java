@@ -172,7 +172,6 @@ class SharedChannelPool implements ChannelPool {
                 } else {
                     port = request.destinationURI.getPort();
                 }
-                
                 Proxy proxy = request.proxy;
                 channelCount.incrementAndGet();
                 SharedChannelPool.this.bootstrap.clone().handler(new ChannelInitializer<Channel>() {
@@ -192,7 +191,7 @@ class SharedChannelPool implements ChannelPool {
                         handler.channelCreated(ch);
                     }
                 }).connect(request.channelURI.getHost(), request.channelURI.getPort()).addListener((ChannelFuture f) -> {
-                	if (f.isSuccess()) {
+                    if (f.isSuccess()) {
                         Channel channel = f.channel();
                         channel.attr(CHANNEL_URI).set(request.channelURI);
 
@@ -204,7 +203,6 @@ class SharedChannelPool implements ChannelPool {
                                 (proxy == null || proxy.isTunneling())) {
                             channel.pipeline().addBefore("HttpClientCodec", "SslHandler", this.sslContext.newHandler(channel.alloc(), request.destinationURI.getHost(), port));
                         }
-
                         leased.put(request.channelURI, channel);
                         channel.attr(CHANNEL_CREATED_SINCE).set(ZonedDateTime.now(ZoneOffset.UTC));
                         channel.attr(CHANNEL_LEASED_SINCE).set(ZonedDateTime.now(ZoneOffset.UTC));
@@ -215,9 +213,7 @@ class SharedChannelPool implements ChannelPool {
                         request.promise.setFailure(f.cause());
                         channelCount.decrementAndGet();
                     }
-                            
-                   });
-
+                });
             }
         }
     }
