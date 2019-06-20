@@ -8,13 +8,13 @@
   <parent>
     <groupId>mil.af.cce.eai.microsoft.azure.v2</groupId>
     <artifactId>autorest-clientruntime-for-java</artifactId>
-    <version>2.1.1</version>
+    <version>2.1.1-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
   <artifactId>azure-client-authentication</artifactId>
   <packaging>jar</packaging>
-  <version>2.1.1</version>
+  <version>2.1.1-SNAPSHOT</version>
 
   <name>Azure Java Client Authentication Library for AutoRest</name>
   <description>This package contains the authentication connectors to Active Directory for JDK.</description>
