@@ -154,13 +154,13 @@ public final class NettyClient extends HttpClient {
         }
 
         private static SharedChannelPool createChannelPool(Bootstrap bootstrap, TransportConfig config,
-                int poolSize, SslContext sslContext) {
+                SharedChannelPoolOptions options, SslContext sslContext) {
             bootstrap.group(config.eventLoopGroup);
             bootstrap.channel(config.channelClass);
             bootstrap.option(ChannelOption.AUTO_READ, false);
             bootstrap.option(ChannelOption.SO_KEEPALIVE, true);
             bootstrap.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) TimeUnit.MINUTES.toMillis(3L));
-            return new SharedChannelPool(bootstrap, new AbstractChannelPoolHandler() {
+            return new SharedChannelPool(bootstrap, config.eventLoopGroup, new AbstractChannelPoolHandler() {
                 @Override
                 public synchronized void channelCreated(Channel ch) throws Exception {
                     // Why is it necessary to have "synchronized" to prevent NRE in pipeline().get(Class<T>)?
@@ -168,19 +168,20 @@ public final class NettyClient extends HttpClient {
                     ch.pipeline().addLast("HttpClientCodec", new HttpClientCodec());
                     ch.pipeline().addLast("HttpClientInboundHandler", new HttpClientInboundHandler());
                 }
-            }, poolSize, new SharedChannelPoolOptions(), sslContext);
+            }, options, sslContext);
         }
 
         private NettyAdapter() {
             TransportConfig config = loadTransport(0);
             this.eventLoopGroup = config.eventLoopGroup;
-            this.channelPool = createChannelPool(new Bootstrap(), config, eventLoopGroup.executorCount() * 16, null);
+            this.channelPool = createChannelPool(new Bootstrap(), config,
+                    new SharedChannelPoolOptions().withPoolSize(eventLoopGroup.executorCount() * 16).withIdleChannelKeepAliveDurationInSec(60), null);
         }
 
-        private NettyAdapter(Bootstrap baseBootstrap, int eventLoopGroupSize, int channelPoolSize, SslContext sslContext) {
+        private NettyAdapter(Bootstrap baseBootstrap, int eventLoopGroupSize, SharedChannelPoolOptions options, SslContext sslContext) {
             TransportConfig config = loadTransport(eventLoopGroupSize);
             this.eventLoopGroup = config.eventLoopGroup;
-            this.channelPool = createChannelPool(baseBootstrap, config, channelPoolSize, sslContext);
+            this.channelPool = createChannelPool(baseBootstrap, config, options, sslContext);
         }
 
         private Single<HttpResponse> sendRequestInternalAsync(final HttpRequest request, final HttpClientConfiguration configuration) {
@@ -422,7 +423,14 @@ public final class NettyClient extends HttpClient {
 
         void emitError(Throwable throwable) {
             while (true) {
-                LOGGER.warn("Error emitted on channel {}. Message: {}", channel.id(), throwable.getMessage());
+                if (throwable == null) {
+                    throwable = new IOException("Unknown error in Netty client");
+                }
+                if (channel != null) {
+                    LOGGER.warn("Error emitted on channel {}. Message: {}", channel.id(), throwable.getMessage());
+                } else {
+                    LOGGER.warn("Error emitted before channel is created. Message: {}", throwable.getMessage());
+                }
                 LOGGER.debug("Stack trace: ", new Exception());
                 channelPool.dump();
                 int s = state.get();
@@ -435,22 +443,22 @@ public final class NettyClient extends HttpClient {
                 } else if (s == ACQUIRED_CONTENT_SUBSCRIBED) {
                     if (transition(ACQUIRED_CONTENT_SUBSCRIBED, CHANNEL_RELEASED)) {
                         LOGGER.debug("Channel disposed after content is subscribed");
-                        closeAndReleaseChannel();
                         content.onError(throwable);
+                        closeAndReleaseChannel();
                         break;
                     }
                 } else if (s == ACQUIRED_CONTENT_NOT_SUBSCRIBED) {
                     if (transition(ACQUIRED_CONTENT_NOT_SUBSCRIBED, CHANNEL_RELEASED)) {
                         LOGGER.debug("Channel disposed before content is subscribed");
-                        closeAndReleaseChannel();
                         responseEmitter.onError(throwable);
+                        closeAndReleaseChannel();
                         break;
                     }
                 } else if (s == ACQUIRED_DISPOSED_CONTENT_SUBSCRIBED) {
                     if (transition(ACQUIRED_DISPOSED_CONTENT_SUBSCRIBED, CHANNEL_RELEASED)) {
                         LOGGER.debug("Channel disposed after content is subscribed with response emitter disposed");
-                        closeAndReleaseChannel();
                         content.onError(throwable);
+                        closeAndReleaseChannel();
                         break;
                     }
                 } else if (s == ACQUIRED_DISPOSED_CONTENT_NOT_SUBSCRIBED) {
@@ -461,6 +469,7 @@ public final class NettyClient extends HttpClient {
                     }
                 } else {
                     LOGGER.debug("Channel disposed at state {}", s);
+                    closeAndReleaseChannel();
                     break;
                 }
             }
@@ -950,12 +959,20 @@ public final class NettyClient extends HttpClient {
     public static class Factory implements HttpClientFactory {
         private final NettyAdapter adapter;
 
-
         /**
          * Create a Netty client factory with default settings.
          */
         public Factory() {
             this.adapter = new NettyAdapter();
+        }
+
+        /**
+         * Create a Netty client factory, specifying the channel pool options.
+         *
+         * @param options the options to configure the channel pool
+         */
+        public Factory(SharedChannelPoolOptions options) {
+            this(new Bootstrap(), 0, options, null);
         }
 
         /**
@@ -972,11 +989,11 @@ public final class NettyClient extends HttpClient {
         public Factory(Bootstrap baseBootstrap, int eventLoopGroupSize, int channelPoolSize) {
             this(baseBootstrap.clone(), eventLoopGroupSize, channelPoolSize, null);
         }
-        
+
         /**
          * Create a Netty client factory, specifying the event loop group size and the
          * channel pool size.
-         * 
+         *
          * @param baseBootstrap
          *          a channel Bootstrap to use as a basis for channel creation
          * @param eventLoopGroupSize
@@ -987,7 +1004,24 @@ public final class NettyClient extends HttpClient {
          *          An SslContext, can be null.
          */
         public Factory(Bootstrap baseBootstrap, int eventLoopGroupSize, int channelPoolSize, SslContext sslContext) {
-            this.adapter = new NettyAdapter(baseBootstrap.clone(), eventLoopGroupSize, channelPoolSize, sslContext);
+            this(baseBootstrap, eventLoopGroupSize, new SharedChannelPoolOptions().withPoolSize(channelPoolSize), sslContext);
+        }
+
+        /**
+         * Create a Netty client factory, specifying the event loop group size and the
+         * channel pool options.
+         *
+         * @param baseBootstrap
+         *          a channel Bootstrap to use as a basis for channel creation
+         * @param eventLoopGroupSize
+         *          the number of event loop executors
+         * @param options
+         *          the options to configure the channel pool
+         * @param sslContext
+         *          An SslContext, can be null.
+         */
+        public Factory(Bootstrap baseBootstrap, int eventLoopGroupSize, SharedChannelPoolOptions options, SslContext sslContext) {
+            this.adapter = new NettyAdapter(baseBootstrap.clone(), eventLoopGroupSize, options, sslContext);
         }
         
         @Override
